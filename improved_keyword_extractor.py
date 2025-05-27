@@ -11,15 +11,20 @@ import numpy as np
 import spacy
 from spacy.matcher import Matcher
 from nltk.corpus import wordnet as wn
-
+import sys
+import json
 # Download necessary NLTK resources - run once
+
 try:
-    nltk.data.find('tokenizers/punkt')
-    #nltk.data.find('corpora/stopwords')
+    #nltk.data.find('tokenizers/punkt')
+    nltk.data.find('corpora/stopwords')
     nltk.data.find('corpora/wordnet')
 except LookupError:
-    nltk.download('punkt')
+    #nltk.download('punkt')
     nltk.download('wordnet')
+    #nltk.download('stopwords')
+    
+question = sys.argv[1]
 
 class ImprovedExclusionDetector:
     def __init__(self):
@@ -46,6 +51,8 @@ class ImprovedExclusionDetector:
             
             # Pattern 2: "do not [verb] [object]" - captures only up to conjunctions
             (r'\b(?:do|does|did)\s+not\s+([^,.?!\n]*?)(?:\s+but|$)', 'do_not'),
+            
+            (r'\b(?:is|are|was|were)\s+not\s+([^,.?!\n]*?)(?:\s+but|$)', 'is_not'),
             
             # Pattern 3: "without [object/action]" - captures what's excluded, stops at conjunctions
             (r'\bwithout\s+(?:any\s+|the\s+)?([^,.?!\n]*?)(?:\s+but|$)', 'without'),
@@ -78,7 +85,8 @@ class ImprovedExclusionDetector:
             # Fallback patterns without the "but" constraint for cases that don't have conjunctions
             (r'\bnot\s+directly\s+([^,.?!\n]+)', 'not_directly_fallback'),
             (r'\b(?:do|does|did)\s+not\s+([^,.?!\n]+)', 'do_not_fallback'),
-            (r'\bwithout\s+(?:any\s+|the\s+)?([^,.?!\n]+)', 'without_fallback')
+            (r'\bwithout\s+(?:any\s+|the\s+)?([^,.?!\n]+)', 'without_fallback'),
+            (r'\b(?:is|are|was|were)\s+not\s+([^,.?!\n]+)', 'is_not_fallback'),
         ]
         
         text_lower = text.lower()
@@ -108,10 +116,25 @@ class ImprovedExclusionDetector:
                     exclusion_terms.append(f"exclude_{self._clean_excluded_content(full_phrase)}")
                     exclusion_phrases.append(full_phrase)
                     
+                elif pattern_type == 'is_not':
+                    # Capture the full phrase after "is/are/was/were not"
+                    full_phrase = f"is not {match.group(1).strip()}"
+                    exclusion_terms.append(f"exclude_{self._clean_excluded_content(full_phrase)}")
+                    exclusion_phrases.append(full_phrase)
+                    
                 elif pattern_type == 'do_not_fallback':
                     # Only use fallback if we haven't already found a match
                     if not any('do_not' in term for term in exclusion_terms):
                         full_phrase = f"do not {match.group(1).strip()}"
+                        if ' but ' in full_phrase:
+                            full_phrase = full_phrase.split(' but ')[0]
+                        exclusion_terms.append(f"exclude_{self._clean_excluded_content(full_phrase)}")
+                        exclusion_phrases.append(full_phrase)
+                
+                elif pattern_type == 'is_not_fallback':
+                    # Only use fallback if we haven't already found a match
+                    if not any('is_not' in term for term in exclusion_terms):
+                        full_phrase = f"is not {match.group(1).strip()}"
                         if ' but ' in full_phrase:
                             full_phrase = full_phrase.split(' but ')[0]
                         exclusion_terms.append(f"exclude_{self._clean_excluded_content(full_phrase)}")
@@ -299,7 +322,7 @@ class ImprovedKeywordExtractor(ImprovedExclusionDetector):
         """Extract keywords with improved negation detection"""
         # First, detect exclusion terms with improved method
         exclusion_terms = self.detect_negation_patterns(text)
-        print("Improved exclusion_terms:", exclusion_terms)
+        #print("Improved exclusion_terms:", exclusion_terms)
         
         # Clean text (don't remove verbs completely, just reduce their weight)
         cleaned_text = self.clean_text(text)
@@ -317,20 +340,25 @@ class ImprovedKeywordExtractor(ImprovedExclusionDetector):
         # Add meaningful exclusion terms (not all, just the most relevant)
         meaningful_exclusions = self._filter_meaningful_exclusions(exclusion_terms)
         
+        if len(meaningful_exclusions) == 0:
+            meaningful_exclusions = exclusion_terms
+        
         keywords = [token for token, _ in sorted_tokens[:max_keywords]]
         
         # Filter keywords to remove any that are in meaningful_exclusions
         filtered_keywords = [kw for kw in keywords if not self.keyword_in_exclusions(kw, meaningful_exclusions)]
         
         
-        filtered_keywords.extend(meaningful_exclusions)
+        #filtered_keywords.extend(meaningful_exclusions)
         
-        return filtered_keywords[:max_keywords]
+        return filtered_keywords[:max_keywords], meaningful_exclusions
         
     def keyword_in_exclusions(self, keyword, exclusions):
         # Check if keyword or phrase contains or equals any exclusion phrase
         keyword_lower = keyword.lower()
+        #print(keyword, exclusions)
         for excl in exclusions:
+            #print(excl, keyword_lower)
             if excl in keyword_lower or keyword_lower in excl:
                 return True
         return False
@@ -418,47 +446,5 @@ class ImprovedKeywordExtractor(ImprovedExclusionDetector):
 # Test the improved version
 if __name__ == "__main__":
     extractor = ImprovedKeywordExtractor()
-    
-    test_questions = [
-        "What naturally-derived dietary supplement ingredients are clinically shown to affect GLP-1 levels or mimic GLP-1 agonist effects?",
-        "Which branded ingredients support blood sugar health, satiety, or weight management through incretin-related pathways?",
-        "What human clinical studies support the use of these ingredients for metabolic health benefits?",
-        "What ingredients do not show any GLP-1 related mechanism of action in published studies?",
-        "Which branded ingredients have been studied but do not demonstrate statistically significant outcomes for satiety or blood sugar?",
-        "Are there ingredients that not only affect GLP-1 levels but also have secondary benefits like lipid modulation or insulin sensitivity?",
-        "Are there examples where the hypothesized MOA is not directly linked to GLP-1 but still influences appetite or blood sugar?",
-        "Is the mechanism of action of any ingredient not fully understood, but with compelling clinical outcomes?",
-        "Could there be naturally-derived ingredients that are not yet patented but have strong supporting evidence?",
-        "Are there any products that include the ingredient but do not claim GLP-1 or incretin-related benefits?",
-        "What ingredients do not show any GLP-1 related mechanism of action in published studies?",
-        "Are there ingredients that enhance satiety while excluding any modulation of gut microbiota?",
-        "Does the ingredient show weight management benefits in populations not classified as overweight or obese?",
-        "How do natural extracts that do not include berberine or mulberry leaf compare in GLP-1 impact?",
-        "Without considering generic or unbranded plant powders, does the ingredient have a proprietary formulation or enhanced bioavailability?",
-        "How effective is the ingredient in supporting blood sugar levels without influencing insulin secretion directly?",
-        "Can this ingredient improve satiety without altering gut hormone levels (e.g., GLP-1, GIP)?",
-        "What are the effects on lipid metabolism for ingredients that do not target carbohydrate absorption?",
-        "What is the ingredient's efficacy in GLP-1 enhancement when it is not delivered in a high-dose format?",
-        "Which branded ingredients provide incretin-related benefits without relying on animal-derived components?",
-        "Can an ingredient promote weight loss without affecting appetite or caloric intake?",
-        "What is the comparative performance of ingredients that exclude fermentation-based bioactivation?",
-        "Which ingredients support metabolic health without contributing to gastrointestinal side effects commonly associated with fiber or polyols?",
-        "What naturally-derived dietary supplement ingredients are clinically shown to affect GLP-1 levels or mimic GLP-1 agonist effects?",
-        "Which branded ingredients support blood sugar health, satiety, or weight management through incretin-related pathways?",
-        "What human clinical studies support the use of these ingredients for metabolic health benefits?",
-        "What ingredients do not show any GLP-1 related mechanism of action in published studies?",
-        "Which branded ingredients have been studied but do not demonstrate statistically significant outcomes for satiety or blood sugar?",
-        "Are there ingredients that not only affect GLP-1 levels but also have secondary benefits like lipid modulation or insulin sensitivity?",
-        "Are there examples where the hypothesized MOA is not directly linked to GLP-1 but still influences appetite or blood sugar?",
-        "Is the mechanism of action of any ingredient not fully understood, but with compelling clinical outcomes?",
-        "Could there be naturally-derived ingredients that are not yet patented but have strong supporting evidence?",
-        "Are there any products that include the ingredient but do not claim GLP-1 or incretin-related benefits?",
-    ]
-
-    print("=== TESTING IMPROVED KEYWORD EXTRACTOR ===\n")
-    
-    for question in test_questions:
-        keywords = extractor.extract_keywords_smart(question, max_keywords=100)
-        print(f"Question: {question}")
-        print(f"Keywords: {keywords}\n")
-        print("-" * 80)
+    keywords, exclusion = extractor.extract_keywords_smart(question, max_keywords=100)
+    print(json.dumps({"keywords": keywords, "exclusion": exclusion}))
